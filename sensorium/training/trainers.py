@@ -13,7 +13,7 @@ from nnfabrik.utility.nn_helpers import set_random_seed
 
 from ..utility import scores
 from ..utility.scores import get_correlations, get_poisson_loss
-
+torch.autograd.set_detect_anomaly(True)
 
 def standard_trainer(
     model,
@@ -76,14 +76,34 @@ def standard_trainer(
 
     def full_objective(model, dataloader, data_key, *args, **kwargs):
 
-        loss_scale = (
-            np.sqrt(len(dataloader[data_key].dataset) / args[0].shape[0])
-            if scale_loss
-            else 1.0
-        )
-        regularizers = int(
-            not detach_core
-        ) * model.core.regularizer() + model.readout.regularizer(data_key)
+         # in case our core is indeed a sequential model (VOneBlock + Architecture)
+        if isinstance(model.core, torch.nn.Sequential):
+
+            loss_scale = (
+                np.sqrt(len(dataloader[data_key].dataset) / args[0].shape[0])
+                if scale_loss
+                else 1.0
+            )
+            regularizers = int(
+                not detach_core
+                
+            )* model.core[1].regularizer() + model.readout.regularizer(data_key)
+            
+        else : 
+            
+            loss_scale = (
+                np.sqrt(len(dataloader[data_key].dataset) / args[0].shape[0])
+                if scale_loss
+                else 1.0
+            )
+            regularizers = int(
+                not detach_core
+                
+            )*model.core.regularizer() + model.readout.regularizer(data_key) 
+           
+            
+
+        
         return (
             loss_scale
             * criterion(
@@ -196,7 +216,13 @@ def standard_trainer(
                 **batch_kwargs,
                 detach_core=detach_core
             )
+            #if (epoch % 99) == 1 :
+            #    print(loss.item())
+            #  For rot equivariant network to work !!
+            #loss.backward(retain_graph = True)
             loss.backward()
+
+            
             if (batch_no + 1) % optim_step_count == 0:
                 optimizer.step()
                 optimizer.zero_grad()

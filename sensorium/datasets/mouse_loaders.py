@@ -2,10 +2,12 @@ from collections import OrderedDict
 from itertools import zip_longest
 import numpy as np
 import os
+import torch
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import SubsetRandomSampler
 from nnfabrik.utility.nn_helpers import set_random_seed
 from neuralpredictors.data.datasets import StaticImageSet, FileTreeDataset
+from torchvision.transforms import RandomResizedCrop, RandomCrop
 
 from neuralpredictors.data.transforms import (
     Subsample,
@@ -15,9 +17,85 @@ from neuralpredictors.data.transforms import (
     SelectInputChannel,
     ScaleInputs,
     AddPupilCenterAsChannels,
+    StaticTransform, 
+    Invertible, 
+   
 )
 
+
+
 from neuralpredictors.data.samplers import SubsetSequentialSampler
+
+
+### Scattering Transform ###
+from kymatio.torch import Scattering2D
+
+use_cuda = torch.cuda.is_available()
+device = torch.device("cuda" if use_cuda else "cpu")
+
+class Scattering(StaticTransform, Invertible):
+    
+    def __init__(
+        self, scale, 
+        mode = 1, #mode = 1,
+        J = 2, 
+        #K = 17, 
+        #channels = 1,
+        in_name="images",
+        channel_axis=0,
+    ):
+
+        self.mode = mode
+        #self.J = J 
+        #self.channels = channels
+        #self.K = K*channels
+        self.in_name = in_name
+        self.channel_axis = channel_axis
+        scattering = Scattering2D(J = J, shape = (int(144*scale), int(256*scale)),
+                                       max_order= self.mode)
+        self.scattering = scattering.to(device)
+
+    def __call__(self, x):
+        key_vals = {k: v for k, v in zip(x._fields, x)}
+        img = key_vals[self.in_name][0,:,:]
+        #print(img.shape)
+        img = torch.from_numpy(img).to(device)
+        #print(img.shape)#.to(device)
+        scattering_transform =  self.scattering(img)
+        key_vals[self.in_name] = scattering_transform.detach().cpu().numpy()
+
+        return x.__class__(**key_vals)
+
+######
+class RndCrop(StaticTransform, Invertible):
+    
+    def __init__(
+        self, 
+        in_name="images",
+        channel_axis=0,
+    ):
+
+        
+        #self.J = J 
+        #self.channels = channels
+        #self.K = K*channels
+        self.in_name = in_name
+        self.channel_axis = channel_axis
+        
+       
+
+    def __call__(self, x):
+        key_vals = {k: v for k, v in zip(x._fields, x)}
+        img = key_vals[self.in_name]#[0,:,:]
+        #print(img.shape)
+    
+        key_vals[self.in_name] = RandomCrop(size = (144, 144))(img)
+
+        return x.__class__(**key_vals)
+
+
+######
+
 
 def static_loader(
     path: str = None,
@@ -35,6 +113,8 @@ def static_loader(
     get_key: bool = False,
     cuda: bool = True,
     normalize: bool = True,
+    scattering: bool = False, 
+    random_crop : bool = False, 
     exclude: str = None,
     include_behavior: bool = False,
     add_behavior_as_channels: bool = True,
@@ -155,7 +235,19 @@ def static_loader(
             np.where(dat.neurons.unit_ids == unit_id)[0][0] for unit_id in neuron_ids
         ]
 
+    # Scattering has to run on GPU to be fast, no need to convert the tensor
+    #if scattering: 
+    #    more_transforms = [Subsample(idx)]#  ToTensor(cuda)]
+    #else: 
+    # standard 
     more_transforms = [Subsample(idx), ToTensor(cuda)]
+
+    if random_crop is True:
+        more_transforms.insert(0, RndCrop())
+
+    if scattering is True: 
+        more_transforms.insert(0, Scattering(scale = scale))
+    ####
 
     if include_px_position is True:
         more_transforms.insert(0, AddPositionAsChannels())
@@ -185,6 +277,8 @@ def static_loader(
             )
         except:
             more_transforms.insert(0, NeuroNormalizer(dat, exclude=exclude))
+
+    
 
     dat.transforms.extend(more_transforms)
 
@@ -292,6 +386,8 @@ def static_loaders(
     image_base_seed=None,
     cuda: bool = True,
     normalize: bool = True,
+    scattering: bool = False,
+    random_crop : bool = False, 
     include_behavior: bool = False,
     add_behavior_as_channels: bool = True,
     exclude: str = None,
@@ -375,6 +471,7 @@ def static_loaders(
             image_n=image_n,
             image_base_seed=image_base_seed,
             normalize=normalize,
+            scattering = scattering, 
             include_behavior=include_behavior,
             add_behavior_as_channels=add_behavior_as_channels,
             exclude=exclude,
